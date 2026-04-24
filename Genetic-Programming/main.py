@@ -3,12 +3,16 @@ import pandas as pd
 import copy
 import time
 import os
-from typing import Optional, List, Union
-from fastapi import FastAPI, HTTPException
+import json
+from typing import Optional, List, Union, Dict, Any
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
+import plotly
+import plotly.graph_objs as go
+from plotly.subplots import make_subplots
 
 CONFIGURACION_ALGORITMO = {
     "tamano_poblacion": 200,
@@ -66,7 +70,8 @@ CONFIGURACIONES_CONJUNTOS_DE_DATOS = {
         "tipo_archivo": "excel",
         "columnas_a_usar": list(range(9)),
         "forzar_columna_objetivo": 8,
-    },
+
+    }
 }
 
 class NodoArbolMatematico:
@@ -335,6 +340,73 @@ def mutarSubarbolCompleto(arbol_original: NodoArbolMatematico, cantidad_variable
     if resultado_mutacion.calcularProfundidadMaxima() > profundidad_maxima_permitida:
         return arbol_original
     return resultado_mutacion
+def simplificar_expresion(arbol):
+    """Simplifica la expresión eliminando operaciones redundantes"""
+    
+    def simplificar_nodo(nodo):
+        if nodo.esNodoHojaSinHijos():
+            return nodo
+        
+        # Simplificar hijos primero
+        if nodo.hijo_izquierdo:
+            nodo.hijo_izquierdo = simplificar_nodo(nodo.hijo_izquierdo)
+        if nodo.hijo_derecho:
+            nodo.hijo_derecho = simplificar_nodo(nodo.hijo_derecho)
+        
+        # Reglas de simplificación
+        if nodo.valor_almacenado == '+':
+            # x + 0 = x
+            if isinstance(nodo.hijo_derecho.valor_almacenado, (int, float)) and abs(float(nodo.hijo_derecho.valor_almacenado)) < 1e-10:
+                return nodo.hijo_izquierdo
+            # 0 + x = x
+            if isinstance(nodo.hijo_izquierdo.valor_almacenado, (int, float)) and abs(float(nodo.hijo_izquierdo.valor_almacenado)) < 1e-10:
+                return nodo.hijo_derecho
+            # x + x = 2*x
+            if str(nodo.hijo_izquierdo) == str(nodo.hijo_derecho):
+                return NodoArbolMatematico('*', NodoArbolMatematico(2.0), nodo.hijo_izquierdo)
+                
+        elif nodo.valor_almacenado == '-':
+            # x - 0 = x
+            if isinstance(nodo.hijo_derecho.valor_almacenado, (int, float)) and abs(float(nodo.hijo_derecho.valor_almacenado)) < 1e-10:
+                return nodo.hijo_izquierdo
+            # x - x = 0
+            if str(nodo.hijo_izquierdo) == str(nodo.hijo_derecho):
+                return NodoArbolMatematico(0.0)
+                
+        elif nodo.valor_almacenado == '*':
+            # x * 1 = x
+            if isinstance(nodo.hijo_derecho.valor_almacenado, (int, float)) and abs(float(nodo.hijo_derecho.valor_almacenado) - 1.0) < 1e-10:
+                return nodo.hijo_izquierdo
+            # 1 * x = x
+            if isinstance(nodo.hijo_izquierdo.valor_almacenado, (int, float)) and abs(float(nodo.hijo_izquierdo.valor_almacenado) - 1.0) < 1e-10:
+                return nodo.hijo_derecho
+            # x * 0 = 0
+            if isinstance(nodo.hijo_derecho.valor_almacenado, (int, float)) and abs(float(nodo.hijo_derecho.valor_almacenado)) < 1e-10:
+                return NodoArbolMatematico(0.0)
+            if isinstance(nodo.hijo_izquierdo.valor_almacenado, (int, float)) and abs(float(nodo.hijo_izquierdo.valor_almacenado)) < 1e-10:
+                return NodoArbolMatematico(0.0)
+                
+        elif nodo.valor_almacenado == '/':
+            # x / 1 = x
+            if isinstance(nodo.hijo_derecho.valor_almacenado, (int, float)) and abs(float(nodo.hijo_derecho.valor_almacenado) - 1.0) < 1e-10:
+                return nodo.hijo_izquierdo
+            # 0 / x = 0
+            if isinstance(nodo.hijo_izquierdo.valor_almacenado, (int, float)) and abs(float(nodo.hijo_izquierdo.valor_almacenado)) < 1e-10:
+                return NodoArbolMatematico(0.0)
+                
+        elif nodo.valor_almacenado == 'log':
+            # log(e) = 1
+            if isinstance(nodo.hijo_izquierdo.valor_almacenado, (int, float)) and abs(float(nodo.hijo_izquierdo.valor_almacenado) - 2.71828) < 0.1:
+                return NodoArbolMatematico(1.0)
+                
+        elif nodo.valor_almacenado == 'sin':
+            # sin(0) = 0
+            if isinstance(nodo.hijo_izquierdo.valor_almacenado, (int, float)) and abs(float(nodo.hijo_izquierdo.valor_almacenado)) < 1e-10:
+                return NodoArbolMatematico(0.0)
+                
+        return nodo
+    
+    return simplificar_nodo(arbol)
 
 class MotorProgramacionGenetica:
     def __init__(self, configuracion_personalizada: dict = None):
@@ -344,84 +416,88 @@ class MotorProgramacionGenetica:
         self.mejor_error_encontrado: float = float("inf")
         self.historial_de_errores_por_generacion: List[float] = []
 
-    def entrenarModeloEvolutivo(self, matriz_entrenamiento_x: np.ndarray, vector_entrenamiento_y: np.ndarray, imprimir_progreso: bool = True):
-        cantidad_variables = matriz_entrenamiento_x.shape[1]
-        tamano_de_poblacion = self.configuracion_actual["tamano_poblacion"]
-        numero_de_generaciones = self.configuracion_actual["generaciones"]
-        probabilidad_de_cruce = self.configuracion_actual["probabilidad_cruce"]
-        probabilidad_mutacion_subarbol = self.configuracion_actual["probabilidad_mutacion_subarbol"]
-        probabilidad_mutacion_punto = self.configuracion_actual["probabilidad_mutacion_punto"]
-        cantidad_competidores_torneo = self.configuracion_actual["tamano_torneo"]
-        profundidad_maxima_al_iniciar = self.configuracion_actual["profundidad_maxima_inicial"]
-        profundidad_maxima_durante_evolucion = self.configuracion_actual["profundidad_maxima_evolucion"]
+def entrenarModeloEvolutivo(self, matriz_entrenamiento_x: np.ndarray, vector_entrenamiento_y: np.ndarray, imprimir_progreso: bool = True):
+    cantidad_variables = matriz_entrenamiento_x.shape[1]
+    tamano_de_poblacion = self.configuracion_actual["tamano_poblacion"]
+    numero_de_generaciones = self.configuracion_actual["generaciones"]
+    probabilidad_de_cruce = self.configuracion_actual["probabilidad_cruce"]
+    probabilidad_mutacion_subarbol = self.configuracion_actual["probabilidad_mutacion_subarbol"]
+    probabilidad_mutacion_punto = self.configuracion_actual["probabilidad_mutacion_punto"]
+    cantidad_competidores_torneo = self.configuracion_actual["tamano_torneo"]
+    profundidad_maxima_al_iniciar = self.configuracion_actual["profundidad_maxima_inicial"]
+    profundidad_maxima_durante_evolucion = self.configuracion_actual["profundidad_maxima_evolucion"]
 
-        tiempo_inicio = time.time()
+    tiempo_inicio = time.time()
 
-        if imprimir_progreso:
-            print(f"  Inicializando poblacion ({tamano_de_poblacion} individuos)...")
-        poblacion_actual = generarPoblacionInicialMitadYMitad(tamano_de_poblacion, profundidad_maxima_al_iniciar, cantidad_variables, self.generador_aleatorio_interno)
+    if imprimir_progreso:
+        print(f"  Inicializando poblacion ({tamano_de_poblacion} individuos)...")
+    poblacion_actual = generarPoblacionInicialMitadYMitad(tamano_de_poblacion, profundidad_maxima_al_iniciar, cantidad_variables, self.generador_aleatorio_interno)
 
-        lista_errores_aptitud = [calcularErrorCuadraticoMedio(individuo, matriz_entrenamiento_x, vector_entrenamiento_y) for individuo in poblacion_actual]
+    lista_errores_aptitud = [calcularErrorCuadraticoMedio(individuo, matriz_entrenamiento_x, vector_entrenamiento_y) for individuo in poblacion_actual]
+
+    indice_del_mejor = int(np.argmin(lista_errores_aptitud))
+    self.mejor_individuo_encontrado = copy.deepcopy(poblacion_actual[indice_del_mejor])
+    self.mejor_individuo_encontrado = simplificar_expresion(self.mejor_individuo_encontrado)
+    self.mejor_error_encontrado = lista_errores_aptitud[indice_del_mejor]
+    # CAMBIO: Guardar RMSE en lugar de MSE
+    self.historial_de_errores_por_generacion = [np.sqrt(self.mejor_error_encontrado)]
+
+    if imprimir_progreso:
+        print(f"  Generacion 0 | Mejor RMSE: {np.sqrt(self.mejor_error_encontrado):.6f} | Tiempo: {time.time()-tiempo_inicio:.1f}s")
+
+    for generacion_actual in range(1, numero_de_generaciones + 1):
+        nueva_poblacion_creada = []
+        nuevos_errores_calculados = []
+
+        if self.configuracion_actual.get("elitismo", True):
+            nueva_poblacion_creada.append(copy.deepcopy(self.mejor_individuo_encontrado))
+            nuevos_errores_calculados.append(self.mejor_error_encontrado)
+
+        while len(nueva_poblacion_creada) < tamano_de_poblacion:
+            probabilidad_aleatoria = self.generador_aleatorio_interno.random()
+
+            if probabilidad_aleatoria < probabilidad_de_cruce:
+                padre_uno = seleccionarIndividuoPorTorneo(poblacion_actual, lista_errores_aptitud, cantidad_competidores_torneo, self.generador_aleatorio_interno)
+                padre_dos = seleccionarIndividuoPorTorneo(poblacion_actual, lista_errores_aptitud, cantidad_competidores_torneo, self.generador_aleatorio_interno)
+                hijo_resultante = cruzarDosArbolesGeneticamente(padre_uno, padre_dos, self.generador_aleatorio_interno, profundidad_maxima_durante_evolucion)
+            elif probabilidad_aleatoria < probabilidad_de_cruce + probabilidad_mutacion_subarbol:
+                padre_uno = seleccionarIndividuoPorTorneo(poblacion_actual, lista_errores_aptitud, cantidad_competidores_torneo, self.generador_aleatorio_interno)
+                hijo_resultante = mutarSubarbolCompleto(padre_uno, cantidad_variables, self.generador_aleatorio_interno, profundidad_maxima_durante_evolucion)
+            elif probabilidad_aleatoria < probabilidad_de_cruce + probabilidad_mutacion_subarbol + probabilidad_mutacion_punto:
+                padre_uno = seleccionarIndividuoPorTorneo(poblacion_actual, lista_errores_aptitud, cantidad_competidores_torneo, self.generador_aleatorio_interno)
+                hijo_resultante = mutarOperadorMatematicoUnico(padre_uno, self.generador_aleatorio_interno)
+            else:
+                hijo_resultante = seleccionarIndividuoPorTorneo(poblacion_actual, lista_errores_aptitud, cantidad_competidores_torneo, self.generador_aleatorio_interno)
+
+            error_del_hijo = calcularErrorCuadraticoMedio(hijo_resultante, matriz_entrenamiento_x, vector_entrenamiento_y)
+            nueva_poblacion_creada.append(hijo_resultante)
+            nuevos_errores_calculados.append(error_del_hijo)
+
+        poblacion_actual = nueva_poblacion_creada[:tamano_de_poblacion]
+        lista_errores_aptitud = nuevos_errores_calculados[:tamano_de_poblacion]
 
         indice_del_mejor = int(np.argmin(lista_errores_aptitud))
-        self.mejor_individuo_encontrado = copy.deepcopy(poblacion_actual[indice_del_mejor])
-        self.mejor_error_encontrado = lista_errores_aptitud[indice_del_mejor]
-        self.historial_de_errores_por_generacion = [self.mejor_error_encontrado]
+        if lista_errores_aptitud[indice_del_mejor] < self.mejor_error_encontrado:
+            self.mejor_error_encontrado = lista_errores_aptitud[indice_del_mejor]
+            self.mejor_individuo_encontrado = copy.deepcopy(poblacion_actual[indice_del_mejor])
+            self.mejor_individuo_encontrado = simplificar_expresion(self.mejor_individuo_encontrado)
 
-        if imprimir_progreso:
-            print(f"  Generacion 0 | Mejor Error: {self.mejor_error_encontrado:.6f} | Tiempo: {time.time()-tiempo_inicio:.1f}s")
+        # CAMBIO: Guardar RMSE en lugar de MSE
+        self.historial_de_errores_por_generacion.append(np.sqrt(self.mejor_error_encontrado))
 
-        for generacion_actual in range(1, numero_de_generaciones + 1):
-            nueva_poblacion_creada = []
-            nuevos_errores_calculados = []
+        if imprimir_progreso and (generacion_actual % 10 == 0 or generacion_actual == 1):
+            error_promedio_poblacion = float(np.mean(lista_errores_aptitud))
+            print(f"  Generacion {generacion_actual:3d} | Mejor RMSE: {np.sqrt(self.mejor_error_encontrado):.6f} | "
+                  f"Promedio MSE: {error_promedio_poblacion:.6f} | "
+                  f"Profundidad: {self.mejor_individuo_encontrado.calcularProfundidadMaxima()} | "
+                  f"Tiempo: {time.time()-tiempo_inicio:.1f}s")
 
-            if self.configuracion_actual.get("elitismo", True):
-                nueva_poblacion_creada.append(copy.deepcopy(self.mejor_individuo_encontrado))
-                nuevos_errores_calculados.append(self.mejor_error_encontrado)
+    if imprimir_progreso:
+        print(f"\n  FINALIZADO | Mejor RMSE: {np.sqrt(self.mejor_error_encontrado):.6f}")
+        print(f"  Mejor ecuacion encontrada: {self.mejor_individuo_encontrado}")
+        print(f"  Tiempo total transcurrido: {time.time()-tiempo_inicio:.2f}s")
 
-            while len(nueva_poblacion_creada) < tamano_de_poblacion:
-                probabilidad_aleatoria = self.generador_aleatorio_interno.random()
-
-                if probabilidad_aleatoria < probabilidad_de_cruce:
-                    padre_uno = seleccionarIndividuoPorTorneo(poblacion_actual, lista_errores_aptitud, cantidad_competidores_torneo, self.generador_aleatorio_interno)
-                    padre_dos = seleccionarIndividuoPorTorneo(poblacion_actual, lista_errores_aptitud, cantidad_competidores_torneo, self.generador_aleatorio_interno)
-                    hijo_resultante = cruzarDosArbolesGeneticamente(padre_uno, padre_dos, self.generador_aleatorio_interno, profundidad_maxima_durante_evolucion)
-                elif probabilidad_aleatoria < probabilidad_de_cruce + probabilidad_mutacion_subarbol:
-                    padre_uno = seleccionarIndividuoPorTorneo(poblacion_actual, lista_errores_aptitud, cantidad_competidores_torneo, self.generador_aleatorio_interno)
-                    hijo_resultante = mutarSubarbolCompleto(padre_uno, cantidad_variables, self.generador_aleatorio_interno, profundidad_maxima_durante_evolucion)
-                elif probabilidad_aleatoria < probabilidad_de_cruce + probabilidad_mutacion_subarbol + probabilidad_mutacion_punto:
-                    padre_uno = seleccionarIndividuoPorTorneo(poblacion_actual, lista_errores_aptitud, cantidad_competidores_torneo, self.generador_aleatorio_interno)
-                    hijo_resultante = mutarOperadorMatematicoUnico(padre_uno, self.generador_aleatorio_interno)
-                else:
-                    hijo_resultante = seleccionarIndividuoPorTorneo(poblacion_actual, lista_errores_aptitud, cantidad_competidores_torneo, self.generador_aleatorio_interno)
-
-                error_del_hijo = calcularErrorCuadraticoMedio(hijo_resultante, matriz_entrenamiento_x, vector_entrenamiento_y)
-                nueva_poblacion_creada.append(hijo_resultante)
-                nuevos_errores_calculados.append(error_del_hijo)
-
-            poblacion_actual = nueva_poblacion_creada[:tamano_de_poblacion]
-            lista_errores_aptitud = nuevos_errores_calculados[:tamano_de_poblacion]
-
-            indice_del_mejor = int(np.argmin(lista_errores_aptitud))
-            if lista_errores_aptitud[indice_del_mejor] < self.mejor_error_encontrado:
-                self.mejor_error_encontrado = lista_errores_aptitud[indice_del_mejor]
-                self.mejor_individuo_encontrado = copy.deepcopy(poblacion_actual[indice_del_mejor])
-
-            self.historial_de_errores_por_generacion.append(self.mejor_error_encontrado)
-
-            if imprimir_progreso and (generacion_actual % 10 == 0 or generacion_actual == 1):
-                error_promedio_poblacion = float(np.mean(lista_errores_aptitud))
-                print(f"  Generacion {generacion_actual:3d} | Mejor Error: {self.mejor_error_encontrado:.6f} | "
-                      f"Promedio Error: {error_promedio_poblacion:.6f} | "
-                      f"Profundidad: {self.mejor_individuo_encontrado.calcularProfundidadMaxima()} | "
-                      f"Tiempo: {time.time()-tiempo_inicio:.1f}s")
-
-        if imprimir_progreso:
-            print(f"\n  FINALIZADO | Mejor Error: {self.mejor_error_encontrado:.6f}")
-            print(f"  Mejor ecuacion encontrada: {self.mejor_individuo_encontrado}")
-            print(f"  Tiempo total transcurrido: {time.time()-tiempo_inicio:.2f}s")
-
-        return self
+    return self
 
     def predecirNuevosValores(self, matriz_datos_x: np.ndarray) -> np.ndarray:
         if self.mejor_individuo_encontrado is None:
@@ -544,6 +620,8 @@ def ejecutarProcesoEvolutivoCompleto(
         "profundidad": motor_genetico.mejor_individuo_encontrado.calcularProfundidadMaxima(),
         "tamanio": motor_genetico.mejor_individuo_encontrado.contarNodosTotales(),
         "historial": motor_genetico.historial_de_errores_por_generacion,
+        "predicciones": predicciones_prueba_escala_original.tolist(),
+        "valores_reales": vector_y_prueba.tolist()
     }
 
     return diccionario_de_resultados
@@ -564,6 +642,92 @@ def ejecutarEvolucionEnTodosLosDatasets(rutas_archivos_locales: dict = None, imp
 
     return resultados_totales
 
+def generar_graficas_resultados(resultados: dict) -> Dict[str, str]:
+    fig = make_subplots(
+        rows=2, cols=2,
+        subplot_titles=('Evolución del Error (MSE)', 'Predicciones vs Reales',
+                        'Distribución de Errores', 'Residuos'),
+        specs=[[{}, {}], [{'type': 'box'}, {}]]
+    )
+    
+    historial = resultados.get('historial', [])
+    if historial:
+        fig.add_trace(
+            go.Scatter(y=historial, mode='lines+markers', name='Mejor MSE',
+                      line=dict(color='#3b82f6', width=2),
+                      marker=dict(size=4, color='#8b5cf6')),
+            row=1, col=1
+        )
+        fig.update_xaxes(title_text="Generación", row=1, col=1)
+        fig.update_yaxes(title_text="MSE", row=1, col=1, type='log')
+    
+    predicciones = resultados.get('predicciones', [])
+    valores_reales = resultados.get('valores_reales', [])
+    if predicciones and valores_reales:
+        fig.add_trace(
+            go.Scatter(x=valores_reales, y=predicciones, mode='markers',
+                      name='Predicciones', marker=dict(color='#a78bfa', size=8, opacity=0.7)),
+            row=1, col=2
+        )
+        min_val = min(min(valores_reales), min(predicciones))
+        max_val = max(max(valores_reales), max(predicciones))
+        fig.add_trace(
+            go.Scatter(x=[min_val, max_val], y=[min_val, max_val], mode='lines',
+                      name='Ideal', line=dict(color='#ec4899', dash='dash')),
+            row=1, col=2
+        )
+        fig.update_xaxes(title_text="Valores Reales", row=1, col=2)
+        fig.update_yaxes(title_text="Predicciones", row=1, col=2)
+    
+    errores = [abs(r - p) for r, p in zip(valores_reales, predicciones)] if predicciones and valores_reales else []
+    if errores:
+        fig.add_trace(
+            go.Box(y=errores, name='Error Absoluto', marker_color='#3b82f6',
+                  boxmean='sd', jitter=0.3),
+            row=2, col=1
+        )
+        fig.update_yaxes(title_text="Error Absoluto", row=2, col=1)
+    
+    if predicciones and valores_reales:
+        fig.add_trace(
+            go.Scatter(x=predicciones, y=[r-p for r,p in zip(valores_reales, predicciones)],
+                      mode='markers', name='Residuos', marker=dict(color='#8b5cf6', size=6, opacity=0.6)),
+            row=2, col=2
+        )
+        fig.add_hline(y=0, line_dash="dash", line_color="#ec4899", row=2, col=2)
+        fig.update_xaxes(title_text="Predicciones", row=2, col=2)
+        fig.update_yaxes(title_text="Residuos", row=2, col=2)
+    
+    fig.update_layout(
+        title_text=f"Resultados del Experimento - {resultados.get('dataset', 'Dataset')}",
+        title_font_size=16,
+        showlegend=True,
+        template='plotly_dark',
+        height=800,
+        width=1000,
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(30,41,59,0.3)',
+        font=dict(color='#f8fafc')
+    )
+    
+    graficas = {}
+    graficas['evolucion'] = json.loads(fig.to_json())
+    
+    fig_bar = go.Figure()
+    metricas = ['RMSE', 'R²', 'Profundidad', 'Nodos']
+    valores_metricas = [
+        resultados.get('rmse_test_original', 0),
+        resultados.get('r2_test', 0),
+        resultados.get('profundidad', 0),
+        resultados.get('tamanio', 0)
+    ]
+    colores = ['#3b82f6', '#a78bfa', '#ec4899', '#06b6d4']
+    fig_bar.add_trace(go.Bar(x=metricas, y=valores_metricas, marker_color=colores, text=valores_metricas, textposition='auto'))
+    fig_bar.update_layout(title="Métricas de Rendimiento", template='plotly_dark', height=400, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(30,41,59,0.3)', font=dict(color='#f8fafc'))
+    graficas['barras'] = json.loads(fig_bar.to_json())
+    
+    return graficas
+
 
 aplicacion_servidor_web = FastAPI(title="API de Programación Genética")
 
@@ -579,6 +743,10 @@ class PeticionParaEjecutarExperimento(BaseModel):
     dataset: str
     generations: int = 50
     population_size: int = 500
+
+class PeticionDatosPersonalizados(BaseModel):
+    datos: List[Dict[str, float]]
+    columna_objetivo: str
 
 @aplicacion_servidor_web.post("/api/experimento")
 def apiRecibirPeticionDeEvolucion(peticion_recibida: PeticionParaEjecutarExperimento):
@@ -600,8 +768,210 @@ if os.path.exists(directorio_archivos_estaticos):
     aplicacion_servidor_web.mount("/static", StaticFiles(directory=directorio_archivos_estaticos), name="static")
 
 @aplicacion_servidor_web.get("/")
+@aplicacion_servidor_web.post("/api/personalizado/entrenar")
+async def apiEntrenarDatosPersonalizados(peticion: PeticionDatosPersonalizados):
+    try:
+        df = pd.DataFrame(peticion.datos)
+        if peticion.columna_objetivo not in df.columns:
+            raise HTTPException(status_code=400, detail=f"Columna '{peticion.columna_objetivo}' no encontrada")
+        
+        vector_y = df[peticion.columna_objetivo].values.astype(float)
+        matriz_x = df.drop(columns=[peticion.columna_objetivo]).values.astype(float)
+        
+        configuracion_personalizada = CONFIGURACION_ALGORITMO.copy()
+        
+        matriz_x_entren, matriz_x_prueba, vector_y_entren, vector_y_prueba = dividirDatosEnEntrenamientoYPrueba(
+            matriz_x, vector_y, proporcion_prueba=0.2, semilla_aleatoria=42)
+        
+        matriz_x_entren_norm, vector_y_entren_norm, estadisticas = normalizarDatosEstadisticamente(matriz_x_entren, vector_y_entren)
+        promedio_x, desviacion_std_x, promedio_y, desviacion_std_y = estadisticas
+        matriz_x_prueba_norm = (matriz_x_prueba - promedio_x) / desviacion_std_x
+        
+        motor = MotorProgramacionGenetica(configuracion_personalizada=configuracion_personalizada)
+        motor.entrenarModeloEvolutivo(matriz_x_entren_norm, vector_y_entren_norm, imprimir_progreso=False)
+        
+        predicciones_prueba_norm = motor.predecirNuevosValores(matriz_x_prueba_norm)
+        predicciones_original = predicciones_prueba_norm * desviacion_std_y + promedio_y
+        
+        rmse = float(np.sqrt(np.mean((vector_y_prueba - predicciones_original) ** 2)))
+        ss_res = np.sum((vector_y_prueba - predicciones_original) ** 2)
+        ss_tot = np.sum((vector_y_prueba - np.mean(vector_y_prueba)) ** 2)
+        r2 = float(1 - ss_res / ss_tot) if ss_tot > 1e-10 else 0.0
+        
+        resultados = {
+            "dataset": "personalizado",
+            "mejor_expresion": str(motor.mejor_individuo_encontrado),
+            "arbol_dict": motor.mejor_individuo_encontrado.convertirADiccionario(),
+            "rmse_test_original": rmse,
+            "r2_test": r2,
+            "profundidad": motor.mejor_individuo_encontrado.calcularProfundidadMaxima(),
+            "tamanio": motor.mejor_individuo_encontrado.contarNodosTotales(),
+            "predicciones": predicciones_original.tolist(),
+            "valores_reales": vector_y_prueba.tolist(),
+            "historial": motor.historial_de_errores_por_generacion
+        }
+        
+        return resultados
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@aplicacion_servidor_web.post("/api/generar-graficas")
+async def apiGenerarGraficas(resultados: dict):
+    try:
+        graficas = generar_graficas_resultados(resultados)
+        return graficas
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 def servirInterfazGraficaWeb():
     ruta_archivo_principal = os.path.join(directorio_archivos_estaticos, "index.html")
     if os.path.exists(ruta_archivo_principal):
         return FileResponse(ruta_archivo_principal)
     return {"message": "Interfaz grafica no encontrada."}
+@aplicacion_servidor_web.post("/api/personalizado/entrenar")
+async def apiEntrenarDatosPersonalizados(peticion: PeticionDatosPersonalizados):
+    try:
+        df = pd.DataFrame(peticion.datos)
+        if peticion.columna_objetivo not in df.columns:
+            raise HTTPException(status_code=400, detail=f"Columna '{peticion.columna_objetivo}' no encontrada")
+        
+        vector_y = df[peticion.columna_objetivo].values.astype(float)
+        matriz_x = df.drop(columns=[peticion.columna_objetivo]).values.astype(float)
+        
+        configuracion_personalizada = CONFIGURACION_ALGORITMO.copy()
+        
+        matriz_x_entren, matriz_x_prueba, vector_y_entren, vector_y_prueba = dividirDatosEnEntrenamientoYPrueba(
+            matriz_x, vector_y, proporcion_prueba=0.2, semilla_aleatoria=42)
+        
+        matriz_x_entren_norm, vector_y_entren_norm, estadisticas = normalizarDatosEstadisticamente(matriz_x_entren, vector_y_entren)
+        promedio_x, desviacion_std_x, promedio_y, desviacion_std_y = estadisticas
+        matriz_x_prueba_norm = (matriz_x_prueba - promedio_x) / desviacion_std_x
+        
+        motor = MotorProgramacionGenetica(configuracion_personalizada=configuracion_personalizada)
+        motor.entrenarModeloEvolutivo(matriz_x_entren_norm, vector_y_entren_norm, imprimir_progreso=False)
+        
+        predicciones_prueba_norm = motor.predecirNuevosValores(matriz_x_prueba_norm)
+        predicciones_original = predicciones_prueba_norm * desviacion_std_y + promedio_y
+        
+        rmse = float(np.sqrt(np.mean((vector_y_prueba - predicciones_original) ** 2)))
+        ss_res = np.sum((vector_y_prueba - predicciones_original) ** 2)
+        ss_tot = np.sum((vector_y_prueba - np.mean(vector_y_prueba)) ** 2)
+        r2 = float(1 - ss_res / ss_tot) if ss_tot > 1e-10 else 0.0
+        
+        resultados = {
+            "dataset": "personalizado",
+            "mejor_expresion": str(motor.mejor_individuo_encontrado),
+            "arbol_dict": motor.mejor_individuo_encontrado.convertirADiccionario(),
+            "rmse_test_original": rmse,
+            "r2_test": r2,
+            "profundidad": motor.mejor_individuo_encontrado.calcularProfundidadMaxima(),
+            "tamanio": motor.mejor_individuo_encontrado.contarNodosTotales(),
+            "predicciones": predicciones_original.tolist(),
+            "valores_reales": vector_y_prueba.tolist(),
+            "historial": motor.historial_de_errores_por_generacion
+        }
+        
+        return resultados
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+def generar_graficas_resultados(resultados: dict) -> Dict[str, str]:
+    fig = make_subplots(
+        rows=2, cols=2,
+        subplot_titles=('Evolución del Error (MSE)', 'Predicciones vs Reales',
+                        'Distribución de Errores', 'Residuos'),
+        specs=[[{}, {}], [{'type': 'box'}, {}]]
+    )
+    
+    historial = resultados.get('historial', [])
+    if historial:
+        fig.add_trace(
+            go.Scatter(y=historial, mode='lines+markers', name='Mejor MSE',
+                      line=dict(color='#3b82f6', width=2),
+                      marker=dict(size=4, color='#8b5cf6')),
+            row=1, col=1
+        )
+        fig.update_xaxes(title_text="Generación", row=1, col=1)
+        fig.update_yaxes(title_text="MSE", row=1, col=1, type='log')
+    
+    predicciones = resultados.get('predicciones', [])
+    valores_reales = resultados.get('valores_reales', [])
+    if predicciones and valores_reales:
+        fig.add_trace(
+            go.Scatter(x=valores_reales, y=predicciones, mode='markers',
+                      name='Predicciones', marker=dict(color='#a78bfa', size=8, opacity=0.7)),
+            row=1, col=2
+        )
+        min_val = min(min(valores_reales), min(predicciones))
+        max_val = max(max(valores_reales), max(predicciones))
+        fig.add_trace(
+            go.Scatter(x=[min_val, max_val], y=[min_val, max_val], mode='lines',
+                      name='Ideal', line=dict(color='#ec4899', dash='dash')),
+            row=1, col=2
+        )
+        fig.update_xaxes(title_text="Valores Reales", row=1, col=2)
+        fig.update_yaxes(title_text="Predicciones", row=1, col=2)
+    
+    errores = [abs(r - p) for r, p in zip(valores_reales, predicciones)] if predicciones and valores_reales else []
+    if errores:
+        fig.add_trace(
+            go.Box(y=errores, name='Error Absoluto', marker_color='#3b82f6',
+                  boxmean='sd', jitter=0.3),
+            row=2, col=1
+        )
+        fig.update_yaxes(title_text="Error Absoluto", row=2, col=1)
+    
+    if predicciones and valores_reales:
+        fig.add_trace(
+            go.Scatter(x=predicciones, y=[r-p for r,p in zip(valores_reales, predicciones)],
+                      mode='markers', name='Residuos', marker=dict(color='#8b5cf6', size=6, opacity=0.6)),
+            row=2, col=2
+        )
+        fig.add_hline(y=0, line_dash="dash", line_color="#ec4899", row=2, col=2)
+        fig.update_xaxes(title_text="Predicciones", row=2, col=2)
+        fig.update_yaxes(title_text="Residuos", row=2, col=2)
+    
+    fig.update_layout(
+        title_text=f"Resultados del Experimento - {resultados.get('dataset', 'Dataset')}",
+        title_font_size=16,
+        showlegend=True,
+        template='plotly_dark',
+        height=800,
+        width=1000,
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(30,41,59,0.3)',
+        font=dict(color='#f8fafc')
+    )
+    
+    graficas = {}
+    graficas['evolucion'] = json.loads(fig.to_json())
+    
+    fig_bar = go.Figure()
+    metricas = ['RMSE', 'R²', 'Profundidad', 'Nodos']
+    valores_metricas = [
+        resultados.get('rmse_test_original', 0),
+        resultados.get('r2_test', 0),
+        resultados.get('profundidad', 0),
+        resultados.get('tamanio', 0)
+    ]
+    colores = ['#3b82f6', '#a78bfa', '#ec4899', '#06b6d4']
+    fig_bar.add_trace(go.Bar(x=metricas, y=valores_metricas, marker_color=colores, text=valores_metricas, textposition='auto'))
+    fig_bar.update_layout(title="Métricas de Rendimiento", template='plotly_dark', height=400, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(30,41,59,0.3)', font=dict(color='#f8fafc'))
+    graficas['barras'] = json.loads(fig_bar.to_json())
+    
+    return graficas
+
+@aplicacion_servidor_web.post("/api/personalizado/predecir")
+async def apiPredecirConModeloPersonalizado(datos: List[Dict[str, float]]):
+    raise HTTPException(status_code=400, detail="Primero debe entrenar un modelo con /api/personalizado/entrenar")
+
+@aplicacion_servidor_web.post("/api/generar-graficas")
+async def apiGenerarGraficas(resultados: dict):
+    try:
+        graficas = generar_graficas_resultados(resultados)
+        return graficas
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@aplicacion_servidor_web.get("/api/test-plotly")
+async def test_plotly():
+    fig = go.Figure(data=[go.Bar(x=['A', 'B', 'C'], y=[1, 3, 2])])
+    return JSONResponse(content=json.loads(fig.to_json()))
