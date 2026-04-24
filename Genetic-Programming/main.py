@@ -450,13 +450,10 @@ def cargarConjuntoDeDatosCSV(nombre_del_conjunto: str, ruta_local_del_archivo: s
             dataframe_pandas = pd.read_excel(fuente_de_datos, 
                                            header=configuracion_del_conjunto.get("cabecera", 0))
         else:
-            # Para el dataset metro, limitamos a 10,000 filas para evitar lentitud
-            nrows = 10000 if nombre_del_conjunto == "metro" else None
             dataframe_pandas = pd.read_csv(
                 fuente_de_datos,
                 sep=configuracion_del_conjunto.get("separador", ","),
-                header=configuracion_del_conjunto.get("cabecera"),
-                nrows=nrows
+                header=configuracion_del_conjunto.get("cabecera")
             )
     except Exception as error_lectura:
         raise RuntimeError(f"No se pudo cargar '{nombre_del_conjunto}' desde '{fuente_de_datos}'. Error: {error_lectura}")
@@ -568,7 +565,7 @@ def ejecutarEvolucionEnTodosLosDatasets(rutas_archivos_locales: dict = None, imp
     return resultados_totales
 
 
-aplicacion_servidor_web = FastAPI(title="API de Programacion Genetica")
+aplicacion_servidor_web = FastAPI(title="API de Programación Genética")
 
 aplicacion_servidor_web.add_middleware(
     CORSMiddleware,

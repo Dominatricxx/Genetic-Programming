@@ -1,169 +1,162 @@
 document.addEventListener('DOMContentLoaded', () => {
-    const runBtn = document.getElementById('run-btn');
-    const resultsSection = document.getElementById('results');
-    const loader = document.getElementById('loader');
-    const dataResults = document.getElementById('data-results');
-    const resRmse = document.getElementById('res-rmse');
-    const resR2 = document.getElementById('res-r2');
-    const resDepth = document.getElementById('res-depth');
-    const resSize = document.getElementById('res-size');
-    const resExpression = document.getElementById('res-expression');
+    const botonEjecutar = document.getElementById('run-btn');
+    const seccionResultados = document.getElementById('results');
+    const indicadorCarga = document.getElementById('loader');
+    const contenedorDatos = document.getElementById('data-results');
+    const textoRmse = document.getElementById('res-rmse');
+    const textoR2 = document.getElementById('res-r2');
+    const textoProfundidad = document.getElementById('res-depth');
+    const textoTamano = document.getElementById('res-size');
+    const textoMejorExpresion = document.getElementById('res-expression');
 
-    runBtn.addEventListener('click', async () => {
-        const dataset = document.getElementById('dataset').value;
-        const generations = parseInt(document.getElementById('generations').value);
-        const population = parseInt(document.getElementById('population').value);
+    botonEjecutar.addEventListener('click', async () => {
+        const conjuntoDatosSeleccionado = document.getElementById('dataset').value;
+        const numeroGeneraciones = parseInt(document.getElementById('generations').value);
+        const tamanoPoblacion = parseInt(document.getElementById('population').value);
 
-        if (!dataset || isNaN(generations) || isNaN(population)) {
+        if (!conjuntoDatosSeleccionado || isNaN(numeroGeneraciones) || isNaN(tamanoPoblacion)) {
             alert('Por favor completa todos los campos correctamente.');
             return;
         }
-        runBtn.disabled = true;
-        runBtn.textContent = 'Evolucionando...';
-        resultsSection.classList.remove('hidden');
-        dataResults.classList.add('hidden');
-        loader.classList.remove('hidden');
+        botonEjecutar.disabled = true;
+        botonEjecutar.textContent = 'Evolucionando...';
+        seccionResultados.classList.remove('hidden');
+        contenedorDatos.classList.add('hidden');
+        indicadorCarga.classList.remove('hidden');
 
         try {
-            const response = await fetch('/api/experimento', {
+            const respuestaServidor = await fetch('/api/experimento', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                    dataset: dataset,
-                    generations: generations,
-                    population_size: population
+                    dataset: conjuntoDatosSeleccionado,
+                    generations: numeroGeneraciones,
+                    population_size: tamanoPoblacion
                 })
             });
 
-            if (!response.ok) {
-                let errorMessage = 'Unknown server error';
-                try {
-                    const errData = await response.json();
-                    errorMessage = errData.detail || errorMessage;
-                } catch (e) {
-                    // Fallback to raw text if JSON parsing fails
-                    errorMessage = await response.text();
+            if (!respuestaServidor.ok) {
+                let detalleError = 'Error desconocido en el servidor';
+                const contentType = respuestaServidor.headers.get("content-type");
+                
+                if (contentType && contentType.includes("application/json")) {
+                    const datosError = await respuestaServidor.json();
+                    detalleError = datosError.detail || datosError.message || JSON.stringify(datosError);
+                } else {
+                    detalleError = await respuestaServidor.text();
                 }
-                throw new Error(errorMessage);
+                throw new Error(detalleError);
             }
 
-            const data = await response.json();
-            resRmse.textContent = data.rmse_test_original.toFixed(4);
-            resR2.textContent = data.r2_test.toFixed(4);
-            resDepth.textContent = data.profundidad;
-            resSize.textContent = data.tamanio;
-            resExpression.textContent = data.mejor_expresion;
+            const datosRecibidos = await respuestaServidor.json();
+            textoRmse.textContent = datosRecibidos.rmse_test_original.toFixed(4);
+            textoR2.textContent = datosRecibidos.r2_test.toFixed(4);
+            textoProfundidad.textContent = datosRecibidos.profundidad;
+            textoTamano.textContent = datosRecibidos.tamanio;
+            textoMejorExpresion.textContent = datosRecibidos.mejor_expresion;
             
-            if (data.arbol_dict) {
-                drawTree(data.arbol_dict);
+            if (datosRecibidos.arbol_dict) {
+                dibujarArbolJerarquicoVisual(datosRecibidos.arbol_dict);
             }
 
-            loader.classList.add('hidden');
-            dataResults.classList.remove('hidden');
+            indicadorCarga.classList.add('hidden');
+            contenedorDatos.classList.remove('hidden');
 
-        } catch (error) {
-            alert('Ocurrió un error: ' + error.message);
-            resultsSection.classList.add('hidden');
+        } catch (errorCapturado) {
+            alert('Ocurrió un error: ' + errorCapturado.message);
+            seccionResultados.classList.add('hidden');
         } finally {
-            runBtn.disabled = false;
-            runBtn.textContent = 'Ejecutar Experimento';
+            botonEjecutar.disabled = false;
+            botonEjecutar.textContent = 'Ejecutar Experimento';
         }
     });
 
-    function drawTree(treeData) {
-        const container = document.getElementById('tree-container');
-        container.innerHTML = ''; // Clear previous
+    function dibujarArbolJerarquicoVisual(datosDelArbol) {
+        const contenedorDelArbol = document.getElementById('tree-container');
+        contenedorDelArbol.innerHTML = ''; 
 
-        const width = container.clientWidth || 800;
-        const height = 600;
+        const anchuraPantalla = contenedorDelArbol.clientWidth || 800;
+        const alturaPantalla = 600;
 
-        // Aumentar el espaciado entre nodos para evitar que se vea amontonado
-        const dx = 140; 
-        const dy = 160;
+        // Aumentar el espaciado para que el árbol no se vea amontonado (horizontal, vertical)
+        const espaciadoHorizontal = 140; 
+        const espaciadoVertical = 160;
 
-        const svg = d3.select('#tree-container')
+        const lienzoSvg = d3.select('#tree-container')
             .append('svg')
-            .attr('width', width)
-            .attr('height', height)
+            .attr('width', anchuraPantalla)
+            .attr('height', alturaPantalla)
             .style('cursor', 'grab');
 
-        // Grupo principal que será escalado/movido por el zoom
-        const g = svg.append('g');
+        const grupoPrincipal = lienzoSvg.append('g');
 
-        // Jerarquía de los datos
-        const root = d3.hierarchy(treeData, d => d.children);
+        const jerarquiaDeNodos = d3.hierarchy(datosDelArbol, nodo => nodo.children);
 
-        // Usamos nodeSize para que el árbol crezca según lo necesite en lugar de amontonarse
-        const treemap = d3.tree().nodeSize([dx, dy]);
-        treemap(root);
+        const mapaDelArbol = d3.tree().nodeSize([espaciadoHorizontal, espaciadoVertical]);
+        mapaDelArbol(jerarquiaDeNodos);
 
-        // Calcular los límites del árbol generado para limitar el paneo
-        let minX = Infinity, maxX = -Infinity, maxY = -Infinity;
-        root.each(d => {
-            if (d.x < minX) minX = d.x;
-            if (d.x > maxX) maxX = d.x;
-            if (d.y > maxY) maxY = d.y;
+        let coordenadaMinimaX = Infinity, coordenadaMaximaX = -Infinity, coordenadaMaximaY = -Infinity;
+        jerarquiaDeNodos.each(nodoHijo => {
+            if (nodoHijo.x < coordenadaMinimaX) coordenadaMinimaX = nodoHijo.x;
+            if (nodoHijo.x > coordenadaMaximaX) coordenadaMaximaX = nodoHijo.x;
+            if (nodoHijo.y > coordenadaMaximaY) coordenadaMaximaY = nodoHijo.y;
         });
 
-        // Comportamiento de Zoom y Paneo con límites
-        const treeWidth = (maxX - minX) + 120;
-        const treeHeight = maxY + 100;
-        const autoMinScale = Math.min(width / treeWidth, height / treeHeight);
-        const fitScale = Math.min(autoMinScale, 1.0);
-        const minScaleLimit = fitScale * 0.5; // Allow 50% more zoom out than perfect fit
+        const anchuraArbol = (coordenadaMaximaX - coordenadaMinimaX) + 120;
+        const alturaArbol = coordenadaMaximaY + 100;
+        const escalaMinimaAuto = Math.min(anchuraPantalla / anchuraArbol, alturaPantalla / alturaArbol);
+        const escalaAjuste = Math.min(escalaMinimaAuto, 1.0);
+        const limiteEscalaMinima = escalaAjuste * 0.5; // Permitir 50% más de zoom hacia fuera del ajuste perfecto
 
-        const zoom = d3.zoom()
-            .scaleExtent([minScaleLimit, 2])
+        const comportamientoZoom = d3.zoom()
+            .scaleExtent([limiteEscalaMinima, 2])
             .translateExtent([
-                [minX - width, -500], 
-                [maxX + width, maxY + 500]
+                [coordenadaMinimaX - anchuraPantalla, -500], 
+                [coordenadaMaximaX + anchuraPantalla, coordenadaMaximaY + 500]
             ])
-            .on('zoom', (event) => {
-                g.attr('transform', event.transform);
+            .on('zoom', (eventoZoom) => {
+                grupoPrincipal.attr('transform', eventoZoom.transform);
             });
         
-        svg.call(zoom);
+        lienzoSvg.call(comportamientoZoom);
 
-        // Centrado inicial de la cámara
-        const initialScale = Math.min(0.9, fitScale);
-        const initialTranslateX = width / 2;
-        const initialTranslateY = 50; // Margen superior
+        const escalaInicial = Math.min(0.9, escalaAjuste);
+        const translacionInicialX = anchuraPantalla / 2;
+        const translacionInicialY = 50; 
         
-        svg.call(
-            zoom.transform, 
-            d3.zoomIdentity.translate(initialTranslateX, initialTranslateY).scale(initialScale)
+        lienzoSvg.call(
+            comportamientoZoom.transform, 
+            d3.zoomIdentity.translate(translacionInicialX, translacionInicialY).scale(escalaInicial)
         );
 
-        // Trazado de las líneas (Links)
-        g.selectAll('.link')
-            .data(root.descendants().slice(1))
+        grupoPrincipal.selectAll('.link')
+            .data(jerarquiaDeNodos.descendants().slice(1))
             .enter().append('path')
             .attr('class', 'link')
-            .attr('d', d => {
-                return `M${d.x},${d.y}
-                        C${d.x},${(d.y + d.parent.y) / 2}
-                         ${d.parent.x},${(d.y + d.parent.y) / 2}
-                         ${d.parent.x},${d.parent.y}`;
+            .attr('d', nodoHijo => {
+                return `M${nodoHijo.x},${nodoHijo.y}
+                        C${nodoHijo.x},${(nodoHijo.y + nodoHijo.parent.y) / 2}
+                         ${nodoHijo.parent.x},${(nodoHijo.y + nodoHijo.parent.y) / 2}
+                         ${nodoHijo.parent.x},${nodoHijo.parent.y}`;
             });
 
-        // Nodos
-        const node = g.selectAll('.node')
-            .data(root.descendants())
+        const elementoNodo = grupoPrincipal.selectAll('.node')
+            .data(jerarquiaDeNodos.descendants())
             .enter().append('g')
-            .attr('class', d => 'node' + (d.children ? ' node--internal' : ' node--leaf'))
-            .attr('transform', d => `translate(${d.x},${d.y})`);
+            .attr('class', nodoHijo => 'node' + (nodoHijo.children ? ' node--internal' : ' node--leaf'))
+            .attr('transform', nodoHijo => `translate(${nodoHijo.x},${nodoHijo.y})`);
 
-        node.append('circle')
+        elementoNodo.append('circle')
             .attr('r', 18);
 
-        node.append('text')
+        elementoNodo.append('text')
             .attr('dy', '.35em')
-            .attr('x', d => d.children ? -25 : 25)
-            .style('text-anchor', d => d.children ? 'end' : 'start')
+            .attr('x', nodoHijo => nodoHijo.children ? -25 : 25)
+            .style('text-anchor', nodoHijo => nodoHijo.children ? 'end' : 'start')
             .style('font-weight', '600')
-            .text(d => d.data.name)
+            .text(nodoHijo => nodoHijo.data.name)
             .clone(true).lower()
             .attr('stroke', 'rgba(15, 23, 42, 0.9)')
             .attr('stroke-width', 4);

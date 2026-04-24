@@ -39,11 +39,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (!respuestaServidor.ok) {
                 let detalleError = 'Error desconocido en el servidor';
-                try {
+                const contentType = respuestaServidor.headers.get("content-type");
+                
+                if (contentType && contentType.includes("application/json")) {
                     const datosError = await respuestaServidor.json();
-                    detalleError = datosError.detail || detalleError;
-                } catch (e) {
-                    // Si no es JSON, capturar el texto bruto (evita el error de parseo)
+                    detalleError = datosError.detail || datosError.message || JSON.stringify(datosError);
+                } else {
                     detalleError = await respuestaServidor.text();
                 }
                 throw new Error(detalleError);
